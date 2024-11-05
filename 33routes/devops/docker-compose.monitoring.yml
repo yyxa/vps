@@ -1,0 +1,94 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    ports:
+      - '9090:9090'
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - './prometheus.yml:/etc/prometheus/prometheus.yml:ro'
+      - './alert.rules:/etc/prometheus/alert.rules'
+    depends_on:
+      - cadvisor
+    networks:
+      - samplenet
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.51.0
+    container_name: cadvisor
+    ports:
+      - '8082:8082'
+    command:
+        - "--port=8082"
+    #   - "--housekeeping_interval=30s"
+    #   - "--docker_only=true"
+    #   - "--disable_metrics=percpu,sched,tcp,udp,disk,diskIO,accelerator,hugetlb,referenced_memory,cpu_topology,resctrl"
+    volumes:
+      - '/var/lib/docker/:/var/lib/docker:ro'
+      - '/dev/disk/:/dev/disk:ro'
+      - '/sys:/sys:ro'
+      - '/var/run:/var/run:rw'
+      - '/:/rootfs:ro'
+      - '/sys/fs/cgroup:/cgroup:ro'
+      - '/etc/machine-id:/etc/machine-id:ro'
+      - '/etc/localtime:/etc/localtime:ro'
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    networks:
+      - samplenet
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - '9093:9093'
+    volumes:
+      - './alertmanager/:/etc/alertmanager/'
+    restart: always
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - samplenet
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    volumes:
+      - '/proc:/host/proc:ro'
+      - '/sys:/host/sys:ro'
+      - '/:/rootfs:ro'
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points'
+      - ^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)
+    ports:
+      - '9100:9100'
+    networks:
+      - samplenet
+    restart: always
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    depends_on:
+      - prometheus
+    ports:
+      - '3001:3000'
+    volumes:
+      - 'grafana_data:/var/lib/grafana'
+      - './grafana/provisioning/:/etc/grafana/provisioning/'
+    env_file:
+      - ./grafana/config.monitoring
+    networks:
+      - samplenet
+    restart: always
+
+networks:
+  samplenet:
+
+volumes:
+  grafana_data: {}
+  prometheus_data: {}
