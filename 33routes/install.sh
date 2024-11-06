@@ -18,6 +18,7 @@ cp 33routes.ru.crt /etc/ssl/33routes.ru.crt
 cp 33routes.ru.key /etc/ssl/33routes.ru.key
 cp ca.crt /etc/ssl/ca.crt
 
+sudo useradd -r nginx
 sudo systemctl enable nginx
 sudo systemctl start nginx
 
@@ -61,20 +62,35 @@ docker run -d \
     --restart=always \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v portainer_data:/data \
-    portainer/portainer-ce:2.21.4-alpine
+    portainer/portainer-ce:latest
 
 # 
 # jenkins
 # 
-docker run -d \
-    -p 9090:8080 \
-    -p 50000:50000 \
-    --name=jenkins \
-    --restart=always \
-    -v jenkins_home:/var/jenkins_home \
-    -e JENKINS_OPTS="--prefix=/admin/jenkins" \
-    jenkins/jenkins:alpine3.20-jdk21
-# sudo usermod -aG docker jenkins
+# docker run -d \
+#     -p 9090:8080 \
+#     -p 50000:50000 \
+#     --name=jenkins \
+#     --restart=always \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     -v jenkins_home:/var/jenkins_home \
+#     -e JENKINS_OPTS="--prefix=/admin/jenkins" \
+#     jenkins/jenkins:alpine3.20-jdk21
+# # sudo usermod -aG docker jenkins
+
+sudo apt update
+sudo apt install -y openjdk-17-jdk
+
+sudo wget -O /usr/share/keyrings/jenkins-keyring.asc \
+    https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc]" \
+    https://pkg.jenkins.io/debian-stable binary/ | \
+    sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+sudo apt update
+sudo apt install -y jenkins
+sudo systemctl enable jenkins
+sudo systemctl start jenkins
+# /usr/lib/systemd/system/jenkins-service
 
 # vless x-ui
 git clone https://github.com/MHSanaei/3x-ui.git && \

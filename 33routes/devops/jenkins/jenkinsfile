@@ -1,0 +1,243 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/yyxa/33routes.git'
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                script {
+                    dir('backend') {
+                        sh 'cp /var/lib/jenkins/workspace/.env .env'
+                    }
+                }
+            }
+        }
+
+        stage('Create Network') {
+            steps {
+                script {
+                    sh 'docker network ls | grep 33routes_backend_network || docker network create 33routes_backend_network'
+                }
+            }
+        }
+
+        stage('Start Database and Redis') {
+            steps {
+                script {
+                    dir('backend/database') {
+                        sh 'docker stop 33routes_postgres || true'
+                        sh 'docker rm 33routes_postgres || true'
+                        sh '''
+                            docker run -d --name 33routes_postgres \
+                            --restart always \
+                            -p 5432:5432 \
+                            --env-file ../.env \
+                            --network 33routes_backend_network \
+                            -v ./postgres/init:/docker-entrypoint-initdb.d \
+                            -v ./postgres/data:/var/lib/postgresql/data \
+                            postgis/postgis:17-3.5-alpine
+                        '''
+
+                        sh 'docker stop 33routes_redis || true'
+                        sh 'docker rm 33routes_redis || true'
+                        sh '''
+                            docker run -d --name 33routes_redis \
+                            --restart always \
+                            -p 6379:6379 \
+                            --network 33routes_backend_network \
+                            -v ./redis/data:/data \
+                            redis:7-alpine
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Start Traefik') {
+            steps {
+                script {
+                    sh 'docker stop 33routes_traefik || true'
+                    sh 'docker rm 33routes_traefik || true'
+                    sh '''
+                        docker run -d --name 33routes_traefik \
+                        --restart always \
+                        --network 33routes_backend_network \
+                        -p 8100:8100 -p 8443:8443 -p 8080:8080 \
+                        -v /var/run/docker.sock:/var/run/docker.sock:ro \
+                        traefik:v3.2.0 \
+                        --providers.docker=true \
+                        --providers.docker.exposedbydefault=false \
+                        --entrypoints.web.address=:8100 \
+                        --entrypoints.websecure.address=:8443 \
+                        --api.insecure=true \
+                        --log.level=INFO
+                    '''
+                }
+            }
+        }
+
+        stage('Build and Run Backend Services') {
+            parallel {
+                stage('Image Service') {
+                    steps {
+                        script {
+                            dir('backend/image_service') {
+                                sh 'docker build -f Dockerfile -t 33routes_image_service .'
+                                sh 'docker stop 33routes_image_service || true'
+                                sh 'docker rm 33routes_image_service || true'
+                                sh '''
+                                    docker run -d --name 33routes_image_service \
+                                    --restart always \
+                                    --network 33routes_backend_network \
+                                    --network=host \
+                                    -v ~/33routes_images:/home/root/33routes_images \
+                                    --label "traefik.enable=true" \
+                                    --label "traefik.http.routers.image_service.rule=PathPrefix(`/api/media/`)" \
+                                    --label "traefik.http.services.image_service.loadbalancer.server.port=8100" \
+                                    33routes_image_service
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('Route Service') {
+                    steps {
+                        script {
+                            dir('backend/route_service') {
+                                sh 'docker build -f Dockerfile -t 33routes_route_service .'
+                                sh 'docker stop 33routes_route_service || true'
+                                sh 'docker rm 33routes_route_service || true'
+                                sh '''
+                                    docker run -d --name 33routes_route_service \
+                                    --restart always \
+                                    --env-file ../.env \
+                                    --network 33routes_backend_network \
+                                    --network=host \
+                                    --label "traefik.enable=true" \
+                                    --label "traefik.http.routers.route_service.rule=PathPrefix(`/api/route/`)" \
+                                    --label "traefik.http.services.route_service.loadbalancer.server.port=8100" \
+                                    33routes_route_service
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('Review Service') {
+                    steps {
+                        script {
+                            dir('review_service') {
+                                sh 'docker build -f Dockerfile -t 33routes_review_service .'
+                                sh 'docker stop 33routes_review_service || true'
+                                sh 'docker rm 33routes_review_service || true'
+                                sh '''
+                                    docker run -d --name 33routes_review_service \
+                                    --restart always \
+                                    --env-file ../.env \
+                                    --network 33routes_backend_network \
+                                    --network=host \
+                                    --label "traefik.enable=true" \
+                                    --label "traefik.http.routers.review_service.rule=PathPrefix(`/api/review/`)" \
+                                    --label "traefik.http.services.review_service.loadbalancer.server.port=8100" \
+                                    33routes_review_service
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('Comment Service') {
+                    steps {
+                        script {
+                            dir('comment_service') {
+                                sh 'docker build -f Dockerfile -t 33routes_comment_service .'
+                                sh 'docker stop 33routes_comment_service || true'
+                                sh 'docker rm 33routes_comment_service || true'
+                                sh '''
+                                    docker run -d --name 33routes_comment_service \
+                                    --restart always \
+                                    --env-file ../.env \
+                                    --network 33routes_backend_network \
+                                    --network=host \
+                                    --label "traefik.enable=true" \
+                                    --label "traefik.http.routers.comment_service.rule=PathPrefix(`/api/comment/`)" \
+                                    --label "traefik.http.services.comment_service.loadbalancer.server.port=8100" \
+                                    33routes_comment_service
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('Collection Service') {
+                    steps {
+                        script {
+                            dir('collection_service') {
+                                sh 'docker build -f Dockerfile -t 33routes_collection_service .'
+                                sh 'docker stop 33routes_collection_service || true'
+                                sh 'docker rm 33routes_collection_service || true'
+                                sh '''
+                                    docker run -d --name 33routes_collection_service \
+                                    --restart always \
+                                    --env-file ../.env \
+                                    --network 33routes_backend_network \
+                                    --network=host \
+                                    --label "traefik.enable=true" \
+                                    --label "traefik.http.routers.collection_service.rule=PathPrefix(`/api/collection/`)" \
+                                    --label "traefik.http.services.collection_service.loadbalancer.server.port=8100" \
+                                    33routes_collection_service
+                                '''
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Run Swagger Docker Container') {
+            steps {
+                script {
+                    sh 'docker stop 33routes_swagger-ui || true'
+                    sh 'docker rm 33routes_swagger-ui || true'
+                    sh '''
+                        docker run -d --name 33routes_swagger-ui \
+                        --restart always \
+                        -p 127.0.0.1:8081:8080 \
+                        -e SWAGGER_JSON=/api/swagger.yaml \
+                        -v ./swagger.yaml:/api/swagger.yaml \
+                        swaggerapi/swagger-ui:v5.18.1
+                    '''
+                }
+            }
+        }
+
+        stage('Build and Run Frontend') {
+            steps {
+                script {
+                    dir('frontend') {
+                        sh 'docker build -t 33routes_frontend .'
+                        sh 'docker stop 33routes_frontend || true'
+                        sh 'docker rm 33routes_frontend || true'
+                        sh 'docker run -d -p 3000:3000 --name 33routes_frontend 33routes_frontend'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Clean up any dangling resources if needed
+                sh 'docker image prune -f || true'
+                sh 'docker container prune -f || true'
+            }
+        }
+    }
+}
