@@ -94,7 +94,6 @@ pipeline {
                                     docker run -d --name 33routes_image_service \
                                     --restart always \
                                     --network 33routes_backend_network \
-                                    --network=host \
                                     -v ~/33routes_images:/home/root/33routes_images \
                                     --label "traefik.enable=true" \
                                     --label "traefik.http.routers.image_service.rule=PathPrefix(`/api/media/`)" \
@@ -118,7 +117,6 @@ pipeline {
                                     --restart always \
                                     --env-file ../.env \
                                     --network 33routes_backend_network \
-                                    --network=host \
                                     --label "traefik.enable=true" \
                                     --label "traefik.http.routers.route_service.rule=PathPrefix(`/api/route/`)" \
                                     --label "traefik.http.services.route_service.loadbalancer.server.port=8100" \
@@ -132,7 +130,7 @@ pipeline {
                 stage('Review Service') {
                     steps {
                         script {
-                            dir('review_service') {
+                            dir('backend/review_service') {
                                 sh 'docker build -f Dockerfile -t 33routes_review_service .'
                                 sh 'docker stop 33routes_review_service || true'
                                 sh 'docker rm 33routes_review_service || true'
@@ -141,7 +139,6 @@ pipeline {
                                     --restart always \
                                     --env-file ../.env \
                                     --network 33routes_backend_network \
-                                    --network=host \
                                     --label "traefik.enable=true" \
                                     --label "traefik.http.routers.review_service.rule=PathPrefix(`/api/review/`)" \
                                     --label "traefik.http.services.review_service.loadbalancer.server.port=8100" \
@@ -155,7 +152,7 @@ pipeline {
                 stage('Comment Service') {
                     steps {
                         script {
-                            dir('comment_service') {
+                            dir('backend/comment_service') {
                                 sh 'docker build -f Dockerfile -t 33routes_comment_service .'
                                 sh 'docker stop 33routes_comment_service || true'
                                 sh 'docker rm 33routes_comment_service || true'
@@ -164,7 +161,6 @@ pipeline {
                                     --restart always \
                                     --env-file ../.env \
                                     --network 33routes_backend_network \
-                                    --network=host \
                                     --label "traefik.enable=true" \
                                     --label "traefik.http.routers.comment_service.rule=PathPrefix(`/api/comment/`)" \
                                     --label "traefik.http.services.comment_service.loadbalancer.server.port=8100" \
@@ -178,7 +174,7 @@ pipeline {
                 stage('Collection Service') {
                     steps {
                         script {
-                            dir('collection_service') {
+                            dir('backend/collection_service') {
                                 sh 'docker build -f Dockerfile -t 33routes_collection_service .'
                                 sh 'docker stop 33routes_collection_service || true'
                                 sh 'docker rm 33routes_collection_service || true'
@@ -187,7 +183,6 @@ pipeline {
                                     --restart always \
                                     --env-file ../.env \
                                     --network 33routes_backend_network \
-                                    --network=host \
                                     --label "traefik.enable=true" \
                                     --label "traefik.http.routers.collection_service.rule=PathPrefix(`/api/collection/`)" \
                                     --label "traefik.http.services.collection_service.loadbalancer.server.port=8100" \
