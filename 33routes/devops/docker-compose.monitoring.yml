@@ -5,6 +5,7 @@ services:
     ports:
       - '9091:9090'
     command:
+      - '--web.external-url=/admin/prometheus'
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
