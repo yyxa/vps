@@ -1,0 +1,71 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/yyxa/33routes.git'
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                script {
+                    dir('backend') {
+                        sh 'cp /var/lib/jenkins/workspace/.env .env'
+                    }
+                }
+            }
+        }
+
+        stage('Build and Run Backend') {
+            steps {
+                script {
+                    dir('backend') {
+                        sh 'make all'
+                    }
+                }
+            }
+        }
+
+        stage('Run Swagger Docker Container') {
+            steps {
+                script {
+                    sh 'docker stop 33routes_swagger-ui || true'
+                    sh 'docker rm 33routes_swagger-ui || true'
+                    sh '''
+                        docker run -d --name 33routes_swagger-ui \
+                        --restart always \
+                        -p 127.0.0.1:8081:8080 \
+                        -e SWAGGER_JSON=/api/swagger.yaml \
+                        -v ./swagger.yaml:/api/swagger.yaml \
+                        swaggerapi/swagger-ui:v5.18.1
+                    '''
+                }
+            }
+        }
+
+        stage('Build and Run Frontend') {
+            steps {
+                script {
+                    dir('frontend') {
+                        sh 'docker build -t 33routes_frontend .'
+                        sh 'docker stop 33routes_frontend || true'
+                        sh 'docker rm 33routes_frontend || true'
+                        sh 'docker run -d -p 3000:3000 --name 33routes_frontend 33routes_frontend'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Clean up any dangling resources if needed
+                sh 'docker image prune -f || true'
+                sh 'docker container prune -f || true'
+            }
+        }
+    }
+}
