@@ -62,9 +62,10 @@ pipeline {
     post {
         always {
             script {
+                sh 'echo 1'
                 // Clean up any dangling resources if needed
-                sh 'docker image prune -f || true'
-                sh 'docker container prune -f || true'
+                // sh 'docker image prune -f || true'
+                // sh 'docker container prune -f || true'
             }
         }
     }
