@@ -1,0 +1,52 @@
+name: ci
+on:
+  push:
+    branches: [main]
+    paths: ['ubuntu/**', '.github/workflows/ci.yml']
+  pull_request:
+    paths: ['ubuntu/**', '.github/workflows/ci.yml']
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: ubuntu
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck -S warning -x setup.sh
+      - run: bash -n setup.sh
+      - run: bash setup.sh --help
+      - name: gitleaks (только рабочее дерево)
+        working-directory: .
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo" zricethezav/gitleaks:latest \
+            detect --no-git --source /repo --redact -v
+
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
+      - run: sudo bash setup.sh --dry-run --yes --user ci --key-file /tmp/k.pub
+
+  full:
+    runs-on: ubuntu-latest        # эфемерная VM с systemd — ломать можно
+    steps:
+      - uses: actions/checkout@v4
+      - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
+      - run: sudo bash setup.sh --yes --user ci --key-file /tmp/k.pub --docker-prep
+      - run: |
+          sudo sshd -t
+          sudo sshd -T | grep -E 'permitrootlogin no|passwordauthentication no|port 2222'
+          sudo ufw status verbose | grep -q '2222/tcp'
+          sudo ufw status verbose | grep -q 'deny (routed)'
+          sudo fail2ban-client status sshd
+          test "$(sysctl -n net.ipv4.ip_forward)" = "0"
+          test -f /etc/docker/daemon.json
+          ! sudo ss -ulpn | grep -q ':51820'
+          sudo systemctl stop ssh-rollback.timer
+      - run: sudo hardening-rollback && sudo sshd -t
