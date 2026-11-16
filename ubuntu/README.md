@@ -99,7 +99,7 @@ ssh -p 2222 -D 1080 ivan@SERVER                  # SOCKS-прокси на вс�
 ```bash
 sudo sshd -T | grep -Ei 'permitroot|passwordauth|port|allowusers'
 sudo ufw status numbered && sudo fail2ban-client status sshd
-sysctl net.ipv4.ip_forward            # = 0
+grep ip_forward /etc/sysctl.d/99-hardening.conf
 sudo lynis audit system
 ```
 

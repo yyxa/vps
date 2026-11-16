@@ -32,6 +32,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
       - run: sudo bash setup.sh --dry-run --yes --user ci --key-file /tmp/k.pub
+      - name: лог при падении
+        if: failure()
+        run: sudo tail -n 60 /var/log/hardening-*.log || true
 
   full:
     runs-on: ubuntu-latest        # эфемерная VM с systemd — ломать можно
@@ -39,14 +42,23 @@ jobs:
       - uses: actions/checkout@v4
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
       - run: sudo bash setup.sh --yes --user ci --key-file /tmp/k.pub --docker-prep
-      - run: |
+      - name: проверки
+        run: |
           sudo sshd -t
           sudo sshd -T | grep -E 'permitrootlogin no|passwordauthentication no|port 2222'
           sudo ufw status verbose | grep -q '2222/tcp'
           sudo ufw status verbose | grep -q 'deny (routed)'
           sudo fail2ban-client status sshd
-          test "$(sysctl -n net.ipv4.ip_forward)" = "0"
+          grep -q '^net.ipv4.ip_forward = 0' /etc/sysctl.d/99-hardening.conf
           test -f /etc/docker/daemon.json
           ! sudo ss -ulpn | grep -q ':51820'
           sudo systemctl stop ssh-rollback.timer
-      - run: sudo hardening-rollback && sudo sshd -t
+      - name: откат
+        run: |
+          sudo hardening-rollback
+          sudo sshd -t
+      - name: лог при падении
+        if: failure()
+        run: |
+          sudo tail -n 80 /var/log/hardening-*.log || true
+          sudo journalctl -u ssh -n 30 --no-pager || true

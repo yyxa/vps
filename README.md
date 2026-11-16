@@ -8,4 +8,4 @@
 | Ubuntu 22.04 / 24.04 / 26.04 | [ubuntu/README.md](ubuntu/README.md) |
 
 Всё живёт в `main`, без версий и тегов. Каждый пуш проверяется CI
-(shellcheck + dry-run + полная установка на эфемерной VM).
+(shellcheck + dry-run + полная установка на эфемерной VM + откат).

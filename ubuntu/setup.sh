@@ -43,7 +43,11 @@ EOF
 G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'
 log(){ printf '%s[+]%s %s\n' "$G" "$N" "$*"; }
 warn(){ printf '%s[!]%s %s\n' "$Y" "$N" "$*"; }
-die(){ printf '%s[x]%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+die(){ trap - ERR; printf '%s[x]%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+on_err(){ local rc=$1 line=$2 cmd=$3
+  (( BASH_SUBSHELL > 0 )) && return 0
+  die "строка $line: «$cmd» вернула $rc (см. $LOG)"
+}
 have(){ command -v "$1" >/dev/null 2>&1; }
 pkg(){ apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
 unit_exists(){ systemctl list-unit-files "$1" --no-legend 2>/dev/null | grep -q "^$1"; }
@@ -83,10 +87,20 @@ parse_args(){
 
 detect(){
   [[ -n "$ADMIN_USER" && "$ADMIN_USER" != root ]] || die "не понял админа: добавь --user ivan"
+  [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( 10#$SSH_PORT >= 1 && 10#$SSH_PORT <= 65535 )) \
+    || die "--ssh-port должен быть числом 1..65535"
   if id "$ADMIN_USER" &>/dev/null; then AHOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
   else AHOME="/home/$ADMIN_USER"; fi
   AK="$AHOME/.ssh/authorized_keys"
-  OLD_PORT="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"; OLD_PORT="${OLD_PORT:-22}"
+  # privsep-каталог: без него sshd -t/-T падают, даже если конфиг валиден
+  mkdir -p /run/sshd; chmod 0755 /run/sshd
+  # определение порта не фатально: sshd может быть не запущен или не установлен
+  OLD_PORT="$(sshd -T 2>>"$LOG" | awk '/^port /{print $2; exit}' || true)"
+  if [[ ! "$OLD_PORT" =~ ^[0-9]+$ ]]; then
+    OLD_PORT="$(awk 'tolower($1)=="port"{print $2; exit}' \
+      /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>>"$LOG" || true)"
+  fi
+  [[ "$OLD_PORT" =~ ^[0-9]+$ ]] || OLD_PORT=22
   SOCK_MODE=0; systemctl is-active --quiet ssh.socket && SOCK_MODE=1
   ALLOW_USERS="$ADMIN_USER"
   local u
@@ -142,10 +156,21 @@ set -euo pipefail
 D="${1:-$(ls -1dt /root/hardening-backup-* 2>/dev/null | head -1)}"
 [[ -d "$D" ]] || { echo "бэкап не найден"; exit 1; }
 systemctl stop ssh-rollback.timer 2>/dev/null || true
-[[ -f "$D/created.txt" ]] && while read -r f; do [[ -n "$f" ]] && rm -f "$f"; done <"$D/created.txt"
-[[ -f "$D/masked.txt" ]] && while read -r u; do systemctl unmask "$u" 2>/dev/null || true; done <"$D/masked.txt"
+if [[ -f "$D/created.txt" ]]; then
+  while read -r f; do
+    [[ -n "$f" ]] || continue
+    case "$f" in
+      /usr/local/sbin/hardening-rollback|/root/.admin-password-*) continue;;
+    esac
+    rm -f "$f"
+  done <"$D/created.txt"
+fi
+if [[ -f "$D/masked.txt" ]]; then
+  while read -r u; do systemctl unmask "$u" 2>/dev/null || true; done <"$D/masked.txt"
+fi
 ( cd "$D" && find . -type f ! -name created.txt ! -name masked.txt -print0 \
   | while IFS= read -r -d '' f; do install -D -m "$(stat -c %a "$f")" "$f" "/${f#./}"; done )
+mkdir -p /run/sshd
 systemctl daemon-reload
 systemctl restart ssh.socket 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
@@ -197,6 +222,7 @@ EOF
 }
 s_ssh(){
   log "3/11 sshd"
+  mkdir -p /run/sshd; chmod 0755 /run/sshd
   # 00-, не 99-: sshd берёт ПЕРВОЕ значение, cloud-init кладёт yes в 50-/60-*.conf
   put /etc/ssh/sshd_config.d/00-hardening.conf 0600 <<EOF
 Port $SSH_PORT
@@ -244,6 +270,7 @@ exec >>/var/log/ssh-rollback.log 2>&1
 set -x
 rm -f /etc/ssh/sshd_config.d/00-hardening.conf /etc/systemd/system/ssh.socket.d/override.conf
 [[ -d "$BACKUP_DIR/etc/ssh/sshd_config.d" ]] && cp -a "$BACKUP_DIR/etc/ssh/sshd_config.d/." /etc/ssh/sshd_config.d/
+mkdir -p /run/sshd
 systemctl daemon-reload
 systemctl restart ssh.socket 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
@@ -252,7 +279,10 @@ command -v fail2ban-client >/dev/null && fail2ban-client unban --all || true
 EOF
   systemctl stop ssh-rollback.timer >/dev/null 2>&1 || true
   systemctl reset-failed ssh-rollback.timer ssh-rollback.service >/dev/null 2>&1 || true
-  sshd -t || { rm -f /etc/ssh/sshd_config.d/00-hardening.conf; die "sshd -t не прошёл, конфиг откачен"; }
+  if ! sshd -t 2>>"$LOG"; then
+    rm -f /etc/ssh/sshd_config.d/00-hardening.conf
+    die "sshd -t не прошёл, конфиг откачен (подробности в $LOG)"
+  fi
   systemd-run --unit=ssh-rollback --on-active=15min /usr/local/sbin/ssh-rollback >/dev/null
   if [[ "$SOCK_MODE" == 1 && "$SSH_PORT" != "$OLD_PORT" ]]; then
     put /etc/systemd/system/ssh.socket.d/override.conf <<EOF
@@ -262,7 +292,9 @@ ListenStream=$SSH_PORT
 EOF
     systemctl daemon-reload; systemctl restart ssh.socket
   else
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null \
+      || systemctl start ssh 2>/dev/null \
+      || warn "sshd не перезапущен — проверь: systemctl status ssh"
   fi
 }
 s_ufw(){
@@ -314,7 +346,7 @@ EOF
 s_sysctl(){
   log "6/11 sysctl"
   put /etc/sysctl.d/99-hardening.conf <<'EOF'
-# --- анти-спуфинг и сетевой мусор (rp_filter=2 — loose, не ломает асимметричную маршрутизацию)
+# --- анти-спуфинг и сетевой мусор (rp_filter=2 — loose)
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
 net.ipv4.conf.all.accept_source_route = 0
@@ -332,7 +364,7 @@ net.ipv4.icmp_ignore_bogus_error_responses = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 4096
 net.ipv4.tcp_rfc1337 = 1
-# --- сервер не роутер: форвардинг выключен (Docker сам включит его при старте — это ожидаемо)
+# --- сервер не роутер (Docker сам включит ip_forward при старте — это ожидаемо)
 net.ipv4.ip_forward = 0
 net.ipv4.conf.all.forwarding = 0
 net.ipv4.conf.default.forwarding = 0
@@ -388,7 +420,7 @@ MaxRetentionSec=1month
 ForwardToSyslog=no
 EOF
   mkdir -p /var/log/journal; systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
-  systemctl restart systemd-journald
+  systemctl restart systemd-journald || warn "journald не перезапущен"
   put /etc/audit/rules.d/99-hardening.rules <<'EOF'
 -D
 -b 8192
@@ -441,7 +473,8 @@ if [ -n "${SSH_CONNECTION:-}" ] && [ -z "${TMOUT:-}" ]; then TMOUT=900; export T
 EOF
   systemctl enable --now apparmor >/dev/null 2>&1 || true
   if unit_exists systemd-timesyncd.service; then
-    systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true; timedatectl set-ntp true
+    systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true
+    timedatectl set-ntp true || true
   fi
   if have etckeeper; then
     [[ -d /etc/.git ]] || etckeeper init >/dev/null 2>&1 || true
@@ -468,7 +501,8 @@ s_final(){
     mkdir -p /etc/docker
     if [[ -f /etc/docker/daemon.json ]]; then
       bak /etc/docker/daemon.json
-      jq -s '.[0] * .[1]' /etc/docker/daemon.json <(echo "$def") >/etc/docker/d.new && mv /etc/docker/d.new /etc/docker/daemon.json
+      jq -s '.[0] * .[1]' /etc/docker/daemon.json <(echo "$def") >/etc/docker/d.new \
+        && mv /etc/docker/d.new /etc/docker/daemon.json
       have docker && warn "docker: перезапусти сам — systemctl restart docker"
     else
       put /etc/docker/daemon.json 0644 <<<"$def"
@@ -506,7 +540,7 @@ main(){
   TS="$(date +%Y%m%d-%H%M%S)"; BACKUP_DIR="/root/hardening-backup-$TS"; LOG="/var/log/hardening-$TS.log"
   mkdir -p "$BACKUP_DIR"; touch "$LOG"; chmod 600 "$LOG"
   exec > >(tee -a "$LOG") 2>&1
-  trap 'die "ошибка на строке $LINENO, см. $LOG"' ERR
+  trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
   detect; collect_keys
   cat <<PLAN
 
