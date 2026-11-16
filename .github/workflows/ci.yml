@@ -7,15 +7,18 @@ on:
     paths: ['ubuntu/**', '.github/workflows/ci.yml']
   workflow_dispatch:
 
+env:
+  GITLEAKS_IMAGE: zricethezav/gitleaks:v8.18.3
+
 defaults:
   run:
     working-directory: ubuntu
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: shellcheck -S warning -x setup.sh
       - run: bash -n setup.sh
@@ -23,34 +26,42 @@ jobs:
       - name: gitleaks (только рабочее дерево)
         working-directory: .
         run: |
-          docker run --rm -v "$GITHUB_WORKSPACE:/repo" zricethezav/gitleaks:latest \
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo" "$GITLEAKS_IMAGE" \
             detect --no-git --source /repo --redact -v
 
   dry-run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
-      - run: sudo bash setup.sh --dry-run --yes --user ci --key-file /tmp/k.pub
+      - run: sudo bash setup.sh --dry-run --yes --key-file /tmp/k.pub
       - name: лог при падении
         if: failure()
         run: sudo tail -n 60 /var/log/hardening-*.log || true
 
   full:
-    runs-on: ubuntu-latest        # эфемерная VM с systemd — ломать можно
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
-      - run: sudo bash setup.sh --yes --user ci --key-file /tmp/k.pub --docker-prep
+      - run: sudo bash setup.sh --yes --key-file /tmp/k.pub
       - name: проверки
         run: |
+          getent passwd drama
+          sudo test -f /home/drama/.ssh/authorized_keys
           sudo sshd -t
-          sudo sshd -T | grep -E 'permitrootlogin no|passwordauthentication no|port 2222'
+          sudo sshd -T | grep -q '^permitrootlogin no$'
+          sudo sshd -T | grep -q '^passwordauthentication no$'
+          sudo sshd -T | grep -q '^port 2222$'
+          sudo sshd -T | grep -q '^allowusers drama$'
+          sudo ufw status verbose | grep -q 'Status: active'
           sudo ufw status verbose | grep -q '2222/tcp'
           sudo ufw status verbose | grep -q 'deny (routed)'
+          grep -q '^IPV6=yes' /etc/default/ufw
           sudo fail2ban-client status sshd
           grep -q '^net.ipv4.ip_forward = 0' /etc/sysctl.d/99-hardening.conf
           test -f /etc/docker/daemon.json
+          jq -e '.["no-new-privileges"] == true' /etc/docker/daemon.json
           ! sudo ss -ulpn | grep -q ':51820'
           sudo systemctl stop ssh-rollback.timer
       - name: откат

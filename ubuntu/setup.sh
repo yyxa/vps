@@ -5,35 +5,36 @@
 #
 #  curl -fsSL https://raw.githubusercontent.com/yyxa/vps/main/ubuntu/setup.sh | sudo bash
 #
+#  Админ всегда: drama
 #  Дефолты: ssh 2222 (только ключи), ufw deny in/routed, fail2ban, endlessh на 22,
-#           unattended-upgrades + reboot 04:30, auditd, apparmor, форвардинг off.
-#  Флаги: --user --key/--key-file --gh-keys --ssh-port --allow-users --trusted-ip
-#         --http --no-auto-reboot --no-tarpit --docker-prep --lynis
-#         --yes --dry-run --rollback [DIR] --help
+#           unattended-upgrades + reboot 04:30, auditd, apparmor, форвардинг off,
+#           docker daemon.json (ротация логов + no-new-privileges).
+#  Флаги: --key/--key-file --gh-keys --ssh-port --http --no-auto-reboot --no-tarpit
+#         --lynis --yes --dry-run --rollback [DIR] --help
 # =============================================================================
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a LC_ALL=C
 
-ADMIN_USER="${ADMIN_USER:-${SUDO_USER:-}}"; ADMIN_SSH_KEY="${ADMIN_SSH_KEY:-}"; GH_KEYS="${GH_KEYS:-}"
-SSH_PORT="${SSH_PORT:-2222}"; SSH_EXTRA_USERS="${SSH_EXTRA_USERS:-}"; TRUSTED_IP="${TRUSTED_IP:-}"
+ADMIN_USER="drama"
+ADMIN_SSH_KEY="${ADMIN_SSH_KEY:-}"; GH_KEYS="${GH_KEYS:-}"
+SSH_PORT="${SSH_PORT:-2222}"
 ALLOW_HTTP="${ALLOW_HTTP:-0}"; AUTO_REBOOT="${AUTO_REBOOT:-1}"; TARPIT="${TARPIT:-1}"
-DOCKER_PREP="${DOCKER_PREP:-0}"; RUN_LYNIS="${RUN_LYNIS:-0}"; ASSUME_YES="${ASSUME_YES:-0}"
+RUN_LYNIS="${RUN_LYNIS:-0}"; ASSUME_YES="${ASSUME_YES:-0}"
 DRY_RUN=0; ROLLBACK=0; ROLLBACK_DIR=""
 
 usage(){ cat <<'EOF'
 ubuntu-hardening (main) — базовая безопасность сервера
 
-  --user U                     админ с sudo (по умолчанию $SUDO_USER)
+Админ всегда: drama
+Docker daemon.json кладётся всегда (ротация логов + no-new-privileges).
+
   --key "ssh-ed25519 ..."      публичный ключ строкой
   --key-file F                 или файлом .pub
   --gh-keys NICK               взять ключи с github.com/NICK.keys
   --ssh-port N                 порт SSH (22 -> тарпит отключится сам)
-  --allow-users "deploy git"   кому ещё разрешить SSH
-  --trusted-ip IP              IP вне банов fail2ban
   --http                       открыть 80/443 в мир
   --no-auto-reboot             не ребутить ночью
   --no-tarpit                  без endlessh
-  --docker-prep                заранее положить /etc/docker/daemon.json
   --lynis                      аудит в конце
   --yes / --dry-run            без подтверждения / только план
   --rollback [DIR]             откатить конфиги из бэкапа
@@ -65,16 +66,12 @@ setkv(){ local f="$1" k="$2" v="$3"; bak "$f"
 
 parse_args(){
   while [[ $# -gt 0 ]]; do case "$1" in
-    --user) ADMIN_USER="$2"; shift 2;;
     --key|--key-file) ADMIN_SSH_KEY="$2"; shift 2;;
     --gh-keys) GH_KEYS="$2"; shift 2;;
     --ssh-port) SSH_PORT="$2"; shift 2;;
-    --allow-users) SSH_EXTRA_USERS="$2"; shift 2;;
-    --trusted-ip) TRUSTED_IP="$2"; shift 2;;
     --http) ALLOW_HTTP=1; shift;;
     --auto-reboot) AUTO_REBOOT=1; shift;; --no-auto-reboot) AUTO_REBOOT=0; shift;;
     --tarpit) TARPIT=1; shift;; --no-tarpit) TARPIT=0; shift;;
-    --docker-prep) DOCKER_PREP=1; shift;;
     --lynis) RUN_LYNIS=1; shift;;
     -y|--yes) ASSUME_YES=1; shift;; --dry-run) DRY_RUN=1; shift;;
     --rollback) ROLLBACK=1; shift
@@ -86,7 +83,6 @@ parse_args(){
 }
 
 detect(){
-  [[ -n "$ADMIN_USER" && "$ADMIN_USER" != root ]] || die "не понял админа: добавь --user ivan"
   [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( 10#$SSH_PORT >= 1 && 10#$SSH_PORT <= 65535 )) \
     || die "--ssh-port должен быть числом 1..65535"
   if id "$ADMIN_USER" &>/dev/null; then AHOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
@@ -103,15 +99,10 @@ detect(){
   [[ "$OLD_PORT" =~ ^[0-9]+$ ]] || OLD_PORT=22
   SOCK_MODE=0; systemctl is-active --quiet ssh.socket && SOCK_MODE=1
   ALLOW_USERS="$ADMIN_USER"
-  local u
-  for u in ${SUDO_USER:-} $SSH_EXTRA_USERS $(getent group sudo | cut -d: -f4 | tr ',' ' '); do
-    [[ -n "$u" && "$u" != root ]] || continue
-    [[ " $ALLOW_USERS " == *" $u "* ]] || ALLOW_USERS+=" $u"
-  done
   return 0
 }
 collect_keys(){
-  local raw v tmp line
+  local raw v tmp line shome sak
   raw="$(mktemp)"; v="$(mktemp)"; tmp="$(mktemp)"; : >"$raw"
   if [[ -n "$GH_KEYS" ]]; then
     log "ключи с github.com/$GH_KEYS.keys"
@@ -124,6 +115,13 @@ collect_keys(){
   fi
   [[ -s "$AK" ]] && cat "$AK" >>"$raw"
   [[ -s /root/.ssh/authorized_keys ]] && cat /root/.ssh/authorized_keys >>"$raw"
+  # если запустили из-под другого пользователя — забрать его ключ для drama,
+  # но SSH-доступ всё равно будет только у drama
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "$ADMIN_USER" && "$SUDO_USER" != root ]]; then
+    shome="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    sak="$shome/.ssh/authorized_keys"
+    [[ -s "$sak" ]] && cat "$sak" >>"$raw"
+  fi
   while IFS= read -r line; do
     [[ "$line" =~ ^(ssh-|ecdsa-|sk-) ]] || continue
     printf '%s\n' "$line" >"$v"
@@ -299,8 +297,20 @@ EOF
 }
 s_ufw(){
   log "4/11 ufw"
-  local f; for f in /etc/default/ufw /etc/ufw/user.rules /etc/ufw/user6.rules; do bak "$f"; done
-  setkv /etc/default/ufw IPV6 yes
+  local f
+  for f in /etc/ufw/user.rules /etc/ufw/user6.rules; do bak "$f"; done
+
+  # /etc/default/ufw sourced ufw-init'ом. Формат строго IPV6=yes.
+  if [[ ! -f /etc/default/ufw ]]; then
+    put /etc/default/ufw <<'EOF'
+IPV6=yes
+EOF
+  else
+    bak /etc/default/ufw
+    sed -i -E 's/^IPV6[[:space:]]*=.*/IPV6=yes/; s/^IPV6[[:space:]].*/IPV6=yes/' /etc/default/ufw
+    grep -q '^IPV6=' /etc/default/ufw || printf 'IPV6=yes\n' >>/etc/default/ufw
+  fi
+
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
   ufw default deny routed >/dev/null
@@ -326,7 +336,7 @@ maxretry = 4
 bantime.increment = true
 bantime.factor = 2
 bantime.maxtime = 2w
-ignoreip = 127.0.0.1/8 ::1 $TRUSTED_IP
+ignoreip = 127.0.0.1/8 ::1
 
 [sshd]
 enabled = true
@@ -478,7 +488,10 @@ EOF
   fi
   if have etckeeper; then
     [[ -d /etc/.git ]] || etckeeper init >/dev/null 2>&1 || true
-    etckeeper commit "hardening $TS" >/dev/null 2>&1 || true
+    if [[ -d /etc/skel/.nvm/.git ]]; then
+      printf 'skel/.nvm/\n' >>/etc/.gitignore
+    fi
+    etckeeper commit "hardening $TS" >/dev/null 2>&1 || warn "etckeeper commit не прошёл"
   fi
 }
 s_tarpit(){
@@ -496,19 +509,20 @@ EOF
 }
 s_final(){
   log "11/11 проверки"
-  if have docker || [[ "$DOCKER_PREP" == 1 ]]; then
-    local def='{"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"},"live-restore":true,"no-new-privileges":true}'
-    mkdir -p /etc/docker
-    if [[ -f /etc/docker/daemon.json ]]; then
-      bak /etc/docker/daemon.json
-      jq -s '.[0] * .[1]' /etc/docker/daemon.json <(echo "$def") >/etc/docker/d.new \
-        && mv /etc/docker/d.new /etc/docker/daemon.json
-      have docker && warn "docker: перезапусти сам — systemctl restart docker"
-    else
-      put /etc/docker/daemon.json 0644 <<<"$def"
+  local def='{"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"},"live-restore":true,"no-new-privileges":true}'
+  mkdir -p /etc/docker
+  if [[ -f /etc/docker/daemon.json ]]; then
+    bak /etc/docker/daemon.json
+    jq -s '.[0] * .[1]' /etc/docker/daemon.json <(echo "$def") >/etc/docker/d.new \
+      && mv /etc/docker/d.new /etc/docker/daemon.json
+    if have docker; then
+      warn "docker: перезапусти сам — systemctl restart docker"
     fi
-    warn "docker обходит UFW: публикуй порты как -p 127.0.0.1:8080:80, не -p 8080:80"
+  else
+    put /etc/docker/daemon.json 0644 <<<"$def"
   fi
+  warn "docker обходит UFW: публикуй порты как -p 127.0.0.1:8080:80, не -p 8080:80"
+
   if [[ "$RUN_LYNIS" == 1 ]]; then
     have lynis || pkg lynis || true
     have lynis && lynis audit system --quick --no-colors | tail -30 || true
@@ -548,7 +562,7 @@ main(){
  админ: $ADMIN_USER (ssh: $ALLOW_USERS), ключей: $KEY_COUNT
  ssh:   $OLD_PORT → $SSH_PORT, только ключи, root no
  ufw:   deny in / deny routed$( [[ $ALLOW_HTTP == 1 ]] && echo ", открыты 80/443" )
- форвардинг: off   авто-ребут: $AUTO_REBOOT   тарпит: $TARPIT   docker-prep: $DOCKER_PREP
+ форвардинг: off   авто-ребут: $AUTO_REBOOT   тарпит: $TARPIT   docker-hardening: on
  бэкап: $BACKUP_DIR
 
 PLAN
