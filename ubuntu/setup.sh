@@ -137,9 +137,28 @@ collect_keys(){
 ensure_admin(){
   id "$ADMIN_USER" &>/dev/null || { adduser --disabled-password --gecos "" "$ADMIN_USER"; log "создан $ADMIN_USER"; }
   usermod -aG sudo "$ADMIN_USER"
+
+  # .ssh обязан быть обычным каталогом. Если там файл/симлинк/дичь — бэкапим и пересоздаём.
+  if [[ -L "$AHOME/.ssh" || ( -e "$AHOME/.ssh" && ! -d "$AHOME/.ssh" ) ]]; then
+    bak "$AHOME/.ssh"
+    rm -rf "$AHOME/.ssh"
+  fi
   mkdir -p "$AHOME/.ssh"
+
+  # authorized_keys обязан быть обычным файлом.
+  if [[ -L "$AK" || ( -e "$AK" && ! -f "$AK" ) ]]; then
+    bak "$AK"
+    rm -rf "$AK"
+  fi
+
   printf '%s\n' "$KEYS_DATA" >"$AK"
-  chown -R "$ADMIN_USER:$(id -gn "$ADMIN_USER")" "$AHOME/.ssh"; chmod 700 "$AHOME/.ssh"; chmod 600 "$AK"
+  chown -R "$ADMIN_USER:$(id -gn "$ADMIN_USER")" "$AHOME/.ssh"
+  chmod 700 "$AHOME/.ssh"
+  chmod 600 "$AK"
+
+  [[ -s "$AK" ]] || die "ключи не записались в $AK"
+  log "ключи записаны в $AK: $(wc -l <"$AK") шт."
+
   if [[ "$(passwd -S "$ADMIN_USER" | awk '{print $2}')" != P ]]; then
     local pass; pass="$(head -c 24 /dev/urandom | base64)"
     printf '%s:%s\n' "$ADMIN_USER" "$pass" | chpasswd

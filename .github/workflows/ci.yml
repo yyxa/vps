@@ -34,7 +34,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
-      - run: sudo bash setup.sh --dry-run --yes --key-file /tmp/k.pub
+      - name: dry-run
+        run: |
+          sudo bash setup.sh --dry-run --yes --key "$(cat /tmp/k.pub)"
       - name: лог при падении
         if: failure()
         run: sudo tail -n 60 /var/log/hardening-*.log || true
@@ -44,32 +46,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
-      - run: sudo bash setup.sh --yes --key-file /tmp/k.pub
-      - name: проверки
+
+      - name: установка
         run: |
+          sudo bash setup.sh --yes --key "$(cat /tmp/k.pub)"
+
+      - name: пользователь и ключи
+        run: |
+          set -x
           getent passwd drama
-          sudo test -f /home/drama/.ssh/authorized_keys
+          sudo ls -ld /home/drama /home/drama/.ssh
+          sudo ssh-keygen -l -f /home/drama/.ssh/authorized_keys
+
+      - name: sshd
+        run: |
           sudo sshd -t
           sudo sshd -T | grep -q '^permitrootlogin no$'
           sudo sshd -T | grep -q '^passwordauthentication no$'
           sudo sshd -T | grep -q '^port 2222$'
           sudo sshd -T | grep -q '^allowusers drama$'
+
+      - name: ufw
+        run: |
           sudo ufw status verbose | grep -q 'Status: active'
           sudo ufw status verbose | grep -q '2222/tcp'
           sudo ufw status verbose | grep -q 'deny (routed)'
           grep -q '^IPV6=yes' /etc/default/ufw
+
+      - name: fail2ban
+        run: |
           sudo fail2ban-client status sshd
+
+      - name: система
+        run: |
           grep -q '^net.ipv4.ip_forward = 0' /etc/sysctl.d/99-hardening.conf
           test -f /etc/docker/daemon.json
           jq -e '.["no-new-privileges"] == true' /etc/docker/daemon.json
           ! sudo ss -ulpn | grep -q ':51820'
+
+      - name: отключить аварийный откат
+        run: |
           sudo systemctl stop ssh-rollback.timer
+
       - name: откат
         run: |
           sudo hardening-rollback
           sudo sshd -t
+
       - name: лог при падении
         if: failure()
         run: |
-          sudo tail -n 80 /var/log/hardening-*.log || true
-          sudo journalctl -u ssh -n 30 --no-pager || true
+          sudo tail -n 100 /var/log/hardening-*.log || true
+          sudo journalctl -u ssh -n 50 --no-pager || true
+          sudo ls -ld /home/drama /home/drama/.ssh || true
+          sudo cat /home/drama/.ssh/authorized_keys || true
