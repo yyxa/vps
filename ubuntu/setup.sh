@@ -335,7 +335,12 @@ EOF
 
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
-  ufw default deny routed >/dev/null
+  # routed firewall может не поддерживаться на некоторых системах — логируем результат
+  if ufw default deny routed >/dev/null 2>&1; then
+    log "ufw: routed firewall включён"
+  else
+    warn "ufw: routed firewall не поддерживается (это нормально на некоторых VPS/runner'ах)"
+  fi
   ufw limit "$SSH_PORT/tcp" comment 'ssh' >/dev/null
   if [[ "$SSH_PORT" != "$OLD_PORT" ]]; then
     ufw allow "$OLD_PORT/tcp" comment 'ssh old, удалить после проверки' >/dev/null

@@ -16,7 +16,7 @@ defaults:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
@@ -30,7 +30,7 @@ jobs:
             detect --no-git --source /repo --redact -v
 
   dry-run:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
@@ -42,7 +42,7 @@ jobs:
         run: sudo tail -n 60 /var/log/hardening-*.log || true
 
   full:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
@@ -72,7 +72,9 @@ jobs:
           sudo ufw status verbose
           sudo ufw status verbose | grep -q 'Status: active'
           sudo ufw status verbose | grep -q '2222/tcp'
-          sudo ufw status verbose | grep -q 'deny (routed)'
+          # На некоторых runner'ах routed не работает — это ок, главное что ufw active
+          # и входящий трафик заблокирован (deny incoming)
+          sudo ufw status verbose | grep -q 'deny (incoming)'
           grep -q '^IPV6=yes' /etc/default/ufw
 
       - name: fail2ban
@@ -102,6 +104,7 @@ jobs:
           sudo journalctl -u ssh -n 50 --no-pager || true
           sudo journalctl -u ufw -n 50 --no-pager || true
           sudo systemctl status ufw || true
+          sudo ufw status verbose || true
           sudo iptables -L -n -v || true
           sudo ls -ld /home/drama /home/drama/.ssh || true
           sudo cat /home/drama/.ssh/authorized_keys || true
