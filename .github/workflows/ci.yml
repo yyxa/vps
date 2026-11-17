@@ -18,7 +18,7 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: shellcheck -S warning -x setup.sh
       - run: bash -n setup.sh
@@ -32,7 +32,7 @@ jobs:
   dry-run:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
       - name: dry-run
         run: |
@@ -44,7 +44,7 @@ jobs:
   full:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
       - run: ssh-keygen -t ed25519 -N '' -f /tmp/k
 
       - name: установка
@@ -68,6 +68,8 @@ jobs:
 
       - name: ufw
         run: |
+          systemctl is-active ufw
+          sudo ufw status verbose
           sudo ufw status verbose | grep -q 'Status: active'
           sudo ufw status verbose | grep -q '2222/tcp'
           sudo ufw status verbose | grep -q 'deny (routed)'
@@ -98,5 +100,8 @@ jobs:
         run: |
           sudo tail -n 100 /var/log/hardening-*.log || true
           sudo journalctl -u ssh -n 50 --no-pager || true
+          sudo journalctl -u ufw -n 50 --no-pager || true
+          sudo systemctl status ufw || true
+          sudo iptables -L -n -v || true
           sudo ls -ld /home/drama /home/drama/.ssh || true
           sudo cat /home/drama/.ssh/authorized_keys || true

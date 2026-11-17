@@ -319,6 +319,9 @@ s_ufw(){
   local f
   for f in /etc/ufw/user.rules /etc/ufw/user6.rules; do bak "$f"; done
 
+  # Явно ставим iptables — ufw использует его как backend
+  pkg iptables || warn "iptables не установился"
+
   # /etc/default/ufw sourced ufw-init'ом. Формат строго IPV6=yes.
   if [[ ! -f /etc/default/ufw ]]; then
     put /etc/default/ufw <<'EOF'
@@ -340,7 +343,10 @@ EOF
   if [[ "$ALLOW_HTTP" == 1 ]]; then
     ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; ufw allow 443/udp >/dev/null
   fi
-  ufw --force enable >/dev/null   # ICMP не трогаем: иначе ломается PMTUD
+  ufw --force enable >/dev/null || die "ufw enable упал"
+  # Явно включаем systemd-сервис ufw
+  systemctl enable --now ufw >/dev/null 2>&1 || warn "ufw service не стартовал"
+  # ICMP не трогаем: иначе ломается PMTUD
 }
 s_f2b(){
   log "5/11 fail2ban"
